@@ -1,0 +1,8 @@
+{
+  "short_name": "virtualTOP$DC",
+  "name": "virtualTOP$DC OdiLeague RNG Analytics",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#05080f",
+  "background_color": "#05080f"
+}
