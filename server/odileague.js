@@ -1,6 +1,6 @@
 const { PRODUCT, LEAGUE, findTeam, formatClock, formatCountdown, virtualRemaining } = require('./catalog');
-const { fetchSnapshot, extractOdds, parseScore } = require('./odibetClient');
-const { setStandings } = require('./standingsCache');
+const { fetchSnapshot, extractOdds, parseScore, flattenResults, odibetGet } = require('./odibetClient');
+const { setStandings, getStandings, applyFormFromResults } = require('./standingsCache');
 const { gradeResults, summary } = require('./roundTracker');
 
 function resolveTeam(id, name) {
@@ -27,8 +27,13 @@ function mapFixture(match, phase) {
       away: odds.away || 0,
       ov25: odds.ov25,
       un25: odds.un25,
+      ov15: odds.ov15,
+      un15: odds.un15,
       gg: odds.gg,
       ng: odds.ng,
+      dc1x: odds.dc1x,
+      dcx2: odds.dcx2,
+      dc12: odds.dc12,
     },
     live,
     score: score.text,
@@ -42,8 +47,9 @@ function mapFixture(match, phase) {
   };
 }
 
-async function syncEnglish(selectedStart) {
-  const snap = await fetchSnapshot(selectedStart);
+async function syncEnglish(selectedStart, options = {}) {
+  const lite = Boolean(options.lite);
+  const snap = await fetchSnapshot(selectedStart, { lite });
   const focus = snap.activePeriod;
   const nowEvent = snap.livePeriod || snap.nextPeriod || focus;
   const phase = focus?.phase === 'live' ? 'live' : focus?.phase === 'upcoming' ? 'prematch' : 'intermission';
@@ -59,7 +65,11 @@ async function syncEnglish(selectedStart) {
       untilStart: Math.ceil(Number.isFinite(period.untilStart) ? period.untilStart : 0),
       countdownLabel: formatCountdown(virtualRemaining(period)),
     }));
-  const standings = setStandings(snap.standings, focus?.season_id || snap.matches[0]?.season_id, Number(focus?.round_number || 0));
+  const standings = lite
+    ? getStandings()
+    : (setStandings(snap.standings, focus?.season_id || snap.matches[0]?.season_id, Number(focus?.round_number || 0)),
+      applyFormFromResults(snap.results || []),
+      getStandings());
   const week = Number(focus?.round_number || snap.matches[0]?.round_number || 0) || null;
   const fixtures = (snap.matches || []).map((match) => ({
     ...mapFixture(match, phase),
@@ -91,12 +101,19 @@ async function syncEnglish(selectedStart) {
     source: 'odibets.com/pxy2/virtuals',
     fixtures,
     standings: standings.rows,
-    results: snap.results,
-    strategy: (gradeResults(snap.results), summary()),
+    results: snap.results || [],
+    strategy: lite ? summary() : (gradeResults(snap.results), summary()),
+    livePeriodStart: snap.livePeriod?.start_time || null,
   };
 }
 
 module.exports = {
   syncEnglish,
   formatCountdown,
+  fetchOfficialResults,
 };
+
+async function fetchOfficialResults() {
+  const stats = await odibetGet({ tab: 'results' });
+  return flattenResults(stats.results || []);
+}

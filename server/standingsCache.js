@@ -28,13 +28,17 @@ let weekPlayed = 1;
 let table = FALLBACK.map((row) => ({ ...row }));
 
 function rank(rows) {
-  const sorted = [...rows].sort((a, b) => Number(b.points) - Number(a.points) || String(a.team_name).localeCompare(String(b.team_name)));
-  return sorted.map((row, index) => {
+  const listed = [...rows];
+  const hasPos = listed.some((row) => row.pos != null || row.position != null);
+  if (hasPos) listed.sort((a, b) => Number(a.pos || a.position || 99) - Number(b.pos || b.position || 99));
+  else listed.sort((a, b) => Number(b.points) - Number(a.points) || String(a.team_name).localeCompare(String(b.team_name)));
+  return listed.map((row, index) => {
     const team = findTeam(row.team_id || row.team_name);
     const played = Number(row.played || row.p || row.games) || weekPlayed;
     const points = Number(row.points) || 0;
+    const form = row.team_form || row.form || '';
     return {
-      pos: index + 1,
+      pos: Number(row.pos || row.position) || index + 1,
       team_id: team?.id || row.team_id || row.team_name,
       team_name: team?.name || row.team_name,
       points,
@@ -42,7 +46,7 @@ function rank(rows) {
       ppg: played ? Number((points / played).toFixed(3)) : points,
       gf: Number(row.gf || row.goals_for || 0),
       ga: Number(row.ga || row.goals_against || 0),
-      team_form: row.team_form || '',
+      team_form: form,
     };
   });
 }
@@ -58,6 +62,39 @@ function getStandings() {
   return { seasonId, rows: table };
 }
 
+function applyFormFromResults(results) {
+  const sorted = [...(results || [])].sort((a, b) => {
+    const ta = new Date(a.settledAt || a.startTime || 0).getTime();
+    const tb = new Date(b.settledAt || b.startTime || 0).getTime();
+    return ta - tb;
+  });
+  const letters = new Map();
+  const push = (name, ch) => {
+    const team = findTeam(name);
+    const key = normalizeName(team?.name || name);
+    if (!key) return;
+    const prev = letters.get(key) || [];
+    prev.push(ch);
+    letters.set(key, prev.slice(-5));
+  };
+  for (const match of sorted) {
+    const hg = Number(match.homeGoals);
+    const ag = Number(match.awayGoals);
+    if (!Number.isFinite(hg) || !Number.isFinite(ag)) continue;
+    const home = hg > ag ? 'W' : hg < ag ? 'L' : 'D';
+    const away = ag > hg ? 'W' : ag < hg ? 'L' : 'D';
+    push(match.homeTeam, home);
+    push(match.awayTeam, away);
+  }
+  table = table.map((row) => {
+    const team = findTeam(row.team_id || row.team_name);
+    const key = normalizeName(team?.name || row.team_name);
+    const form = letters.get(key);
+    return form?.length ? { ...row, team_form: form.join('') } : row;
+  });
+  return getStandings();
+}
+
 function lookupStanding(idOrName) {
   const team = findTeam(idOrName);
   const needle = normalizeName(team?.name || idOrName);
@@ -67,4 +104,4 @@ function lookupStanding(idOrName) {
   }) || { pos: 10, points: 0, played: 0, ppg: 0, team_form: '', team_name: idOrName };
 }
 
-module.exports = { setStandings, getStandings, lookupStanding, FALLBACK };
+module.exports = { setStandings, getStandings, lookupStanding, applyFormFromResults, FALLBACK };

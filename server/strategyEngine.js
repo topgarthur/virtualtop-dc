@@ -3,6 +3,8 @@ const { getBuffer } = require('./buffers');
 const { poissonPmf } = require('./poisson');
 const { lookupStanding, getStandings } = require('./standingsCache');
 const { getCorrections } = require('./roundTracker');
+const { getParams, applyTemperature } = require('./learner');
+const { getIntel, shrinkLambda } = require('./rngIntel');
 
 const RHO = 0.13;
 const ELO_K = 18;
@@ -44,8 +46,12 @@ function recencyWeights(n) {
   return w.map((v) => v / (s || 1));
 }
 
-function formStats(history, team) {
-  const rows = matchesFor(history, team);
+function formStats(history, team, venue) {
+  const rows = matchesFor(history, team).filter((row) => {
+    if (venue === 'home') return row.isHome;
+    if (venue === 'away') return !row.isHome;
+    return true;
+  });
   if (!rows.length) {
     return { attack: LEAGUE_AVG, defense: LEAGUE_AVG, n: 0, drawRate: 0.27, winRate: 0.33, gf: 0, ga: 0 };
   }
@@ -106,31 +112,40 @@ function eloProbs(rh, ra) {
   };
 }
 
-function dixonColes(lh, la) {
+function dixonColes(lh, la, rho = RHO, cap = 8, zip00 = 0) {
   let pHome = 0;
   let pDraw = 0;
   let pAway = 0;
   let pOver25 = 0;
+  let pOver15 = 0;
   let pGg = 0;
-  for (let i = 0; i <= 8; i += 1) {
-    for (let j = 0; j <= 8; j += 1) {
-      const p = poissonPmf(i, lh) * poissonPmf(j, la) * tau(i, j, lh, la, RHO);
+  const max = Math.min(8, Number(cap) || 8);
+  let mass = 0;
+  for (let i = 0; i <= max; i += 1) {
+    for (let j = 0; j <= max; j += 1) {
+      let p = poissonPmf(i, lh) * poissonPmf(j, la) * tau(i, j, lh, la, rho);
+      if (i === 0 && j === 0) p += Number(zip00) || 0;
+      mass += p;
       if (i > j) pHome += p;
       else if (i === j) pDraw += p;
       else pAway += p;
+      if (i + j >= 2) pOver15 += p;
       if (i + j >= 3) pOver25 += p;
       if (i > 0 && j > 0) pGg += p;
     }
   }
   const sum = pHome + pDraw + pAway || 1;
+  const z = mass || 1;
   return {
     home: pHome / sum,
     draw: pDraw / sum,
     away: pAway / sum,
-    ov25: pOver25,
-    un25: 1 - pOver25,
-    gg: pGg,
-    ng: 1 - pGg,
+    ov15: pOver15 / z,
+    un15: 1 - pOver15 / z,
+    ov25: pOver25 / z,
+    un25: 1 - pOver25 / z,
+    gg: pGg / z,
+    ng: 1 - pGg / z,
   };
 }
 
@@ -179,17 +194,48 @@ function tableSignal(homeRow, awayRow) {
   };
 }
 
-function mix3(a, b, c, wa, wb, wc) {
-  const w = wa + wb + wc || 1;
-  return {
-    home: (wa * a.home + wb * b.home + wc * c.home) / w,
-    draw: (wa * a.draw + wb * b.draw + wc * c.draw) / w,
-    away: (wa * a.away + wb * b.away + wc * c.away) / w,
-  };
+function buildPi(history) {
+  const ratings = new Map();
+  const get = (id) => ratings.get(id) ?? 0;
+  const lr = 0.055;
+  for (const match of history) {
+    if (match.homeGoals == null || match.awayGoals == null) continue;
+    const h = String(match.homeId || match.homeTeam);
+    const a = String(match.awayId || match.awayTeam);
+    const rh = get(h);
+    const ra = get(a);
+    const gd = match.homeGoals - match.awayGoals;
+    const expected = rh - ra;
+    ratings.set(h, rh + lr * (gd - expected));
+    ratings.set(a, ra + lr * (expected - gd));
+  }
+  return ratings;
 }
 
-function applyCorrections(probs, corr) {
-  const damp = corr.favoriteDamp || 0.18;
+function piProbs(rh, ra, drawRate) {
+  const gd = rh - ra;
+  const pHomeEdge = 1 / (1 + Math.exp(-gd * 0.85));
+  const pDraw = clamp(drawRate * Math.exp(-Math.abs(gd) * 0.45), 0.16, 0.36);
+  const rest = 1 - pDraw;
+  return { home: rest * pHomeEdge, draw: pDraw, away: rest * (1 - pHomeEdge) };
+}
+
+function mixWeighted(parts) {
+  const out = { home: 0, draw: 0, away: 0 };
+  let wsum = 0;
+  for (const { p, w } of parts) {
+    if (!p || !w) continue;
+    wsum += w;
+    out.home += w * (p.home || 0);
+    out.draw += w * (p.draw || 0);
+    out.away += w * (p.away || 0);
+  }
+  const s = wsum || 1;
+  return { home: out.home / s, draw: out.draw / s, away: out.away / s };
+}
+
+function applyCorrections(probs, corr, learnedDraw) {
+  const damp = Math.min(0.52, (corr.favoriteDamp || 0.18) * 1.08);
   const floor = corr.drawFloor || 0.22;
   const nudge = corr.homeNudge || 0;
   let home = probs.home * (1 - damp) + (1 / 3) * damp;
@@ -197,7 +243,7 @@ function applyCorrections(probs, corr) {
   let draw = probs.draw * (1 - damp) + (1 / 3) * damp;
   home += nudge;
   away -= nudge;
-  draw = Math.max(draw, floor);
+  draw = Math.max(draw, Math.max(floor, (learnedDraw || 0.22) * 0.85));
   const sum = home + away + draw || 1;
   return { home: home / sum, draw: draw / sum, away: away / sum };
 }
@@ -207,55 +253,81 @@ function predictPair(homeInput, awayInput) {
   const away = resolve(awayInput);
   const history = getBuffer();
   const corr = getCorrections();
+  const learned = getParams();
+  const intel = getIntel();
+  const leagueAvg = intel.generator?.lambda || LEAGUE_AVG;
   const h = formStats(history, home);
   const a = formStats(history, away);
+  const hHome = formStats(history, home, 'home');
+  const aAway = formStats(history, away, 'away');
   const homeTable = lookupStanding(home.id || home.name);
   const awayTable = lookupStanding(away.id || away.name);
   const table = tableSignal(homeTable, awayTable);
 
   const histN = Math.min(h.n, a.n);
-  const histTrust = clamp(histN / 8, 0.15, 1);
-  const lambdaHome = clamp(
-    (h.n ? h.attack : LEAGUE_AVG) * ((a.n ? a.defense : LEAGUE_AVG) / LEAGUE_AVG) * 1.05,
-    0.45,
-    3.2
-  );
-  const lambdaAway = clamp(
-    (a.n ? a.attack : LEAGUE_AVG) * ((h.n ? h.defense : LEAGUE_AVG) / LEAGUE_AVG),
-    0.4,
-    3.1
-  );
-  const dc = dixonColes(lambdaHome, lambdaAway);
+  const histTrust = intel.independence?.leaky ? clamp(histN / 8, 0.2, 1) : clamp(histN / 14, 0.08, 0.55);
+  const homeAdv = intel.generator?.homeAdv || learned.homeAdv || 1.06;
+  const attackH = hHome.n >= 3 ? hHome.attack : h.attack;
+  const defA = aAway.n >= 3 ? aAway.defense : a.defense;
+  const attackA = aAway.n >= 3 ? aAway.attack : a.attack;
+  const defH = hHome.n >= 3 ? hHome.defense : h.defense;
+  const rawLh = (h.n ? attackH : leagueAvg) * ((a.n ? defA : leagueAvg) / leagueAvg) * homeAdv;
+  const rawLa = (a.n ? attackA : leagueAvg) * ((h.n ? defH : leagueAvg) / leagueAvg);
+  const lambdaHome = clamp(shrinkLambda(rawLh, h.n, leagueAvg * homeAdv), 0.45, 3.2);
+  const lambdaAway = clamp(shrinkLambda(rawLa, a.n, leagueAvg), 0.4, 3.1);
+  const nbPull = intel.generator?.nbPhi > 0 ? 0.12 : 0;
+  const lh = lambdaHome * (1 - nbPull) + leagueAvg * homeAdv * nbPull;
+  const la = lambdaAway * (1 - nbPull) + leagueAvg * nbPull;
+  const dc = dixonColes(lh, la, intel.generator?.rho || learned.rho || RHO, intel.generator?.cap || 8, intel.generator?.zip00 || 0);
   const elo = buildElo(history);
   const eloP = eloProbs(elo.get(String(home.id)) ?? ELO_START, elo.get(String(away.id)) ?? ELO_START);
+  const pi = buildPi(history);
+  const piP = piProbs(pi.get(String(home.id)) ?? 0, pi.get(String(away.id)) ?? 0, learned.drawRate);
   const pair = h2h(history, home, away);
 
-  const dcDraw = clamp(0.55 * dc.draw + 0.25 * ((h.drawRate + a.drawRate) / 2) + 0.2 * pair.draw, 0.16, 0.38);
+  const dcDraw = clamp(0.5 * dc.draw + 0.25 * ((h.drawRate + a.drawRate) / 2) + 0.15 * pair.draw + 0.1 * learned.drawRate, 0.16, 0.38);
   const dcMix = { home: dc.home, draw: dcDraw, away: dc.away };
-
-  const mixed = mix3(table, dcMix, eloP, 0.42, 0.38 * histTrust + 0.12, 0.18 * histTrust + 0.08);
-  const corrected = applyCorrections(mixed, corr);
-  const h2hPull = pair.n >= 3 ? 0.08 : 0;
+  const ww = learned.weights || {};
+  const leak = intel.independence?.leaky ? 1 : 0.55;
+  const mixed = mixWeighted([
+    { p: table, w: (ww.table || 0.36) * (intel.independence?.leaky ? 1 : 0.65) },
+    { p: dcMix, w: (ww.dc || 0.32) * (0.85 + 0.15 * histTrust) },
+    { p: eloP, w: (ww.elo || 0.16) * leak * (0.5 + 0.5 * histTrust) },
+    { p: piP, w: (ww.pi || 0.16) * leak * histTrust },
+  ]);
+  const corrected = applyCorrections(mixed, corr, learned.drawRate);
+  const h2hPull = intel.independence?.leaky && pair.n >= 4 ? 0.06 : 0;
   let homeP = corrected.home * (1 - h2hPull) + pair.home * h2hPull;
   let awayP = corrected.away * (1 - h2hPull) + pair.away * h2hPull;
   let drawP = corrected.draw * (1 - h2hPull) + pair.draw * h2hPull;
   const sum = homeP + awayP + drawP || 1;
+  const raw = { home: homeP / sum, draw: drawP / sum, away: awayP / sum };
+  const cooled = applyTemperature(raw, learned.temperature);
 
   return {
-    home: homeP / sum,
-    draw: drawP / sum,
-    away: awayP / sum,
+    home: cooled.home,
+    draw: cooled.draw,
+    away: cooled.away,
+    ov15: dc.ov15,
+    un15: dc.un15,
     ov25: dc.ov25,
     un25: dc.un25,
     gg: dc.gg,
     ng: dc.ng,
-    lambdaHome: Number(lambdaHome.toFixed(3)),
-    lambdaAway: Number(lambdaAway.toFixed(3)),
-    samples: { home: h.n, away: a.n, h2h: pair.n },
+    lambdaHome: Number(lh.toFixed(3)),
+    lambdaAway: Number(la.toFixed(3)),
+    samples: { home: h.n, away: a.n, h2h: pair.n, homeVenue: hHome.n, awayVenue: aAway.n },
     table: { home: homeTable, away: awayTable, ptsGap: table.ptsGap },
     corrections: corr,
-    components: { table, dixonColes: dcMix, elo: eloP, h2h: pair },
-    engine: 'table+history ML (no club-size bias) + gameweek correction',
+    learner: { rho: learned.rho, temperature: learned.temperature, weights: learned.weights, n: learned.n, logloss: learned.logloss },
+    intel: {
+      oddsWeight: intel.oddsWeight,
+      leaky: intel.independence?.leaky,
+      lambda: intel.generator?.lambda,
+      minSureP: intel.sureExtra?.minP,
+    },
+    components: { table, dixonColes: dcMix, elo: eloP, pi: piP, h2h: pair },
+    engine: 'online stack: table + DC(ρ̂) + Elo + π-ratings + temp scale',
     seasonId: getStandings().seasonId,
   };
 }

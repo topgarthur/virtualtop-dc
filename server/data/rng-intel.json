@@ -1,0 +1,85 @@
+{
+  "n": 380,
+  "generator": {
+    "lambda": 1.3421,
+    "lambdaH": 1.5493,
+    "lambdaA": 1.1349,
+    "homeAdv": 1.3652,
+    "rho": 0.04,
+    "drawRate": 0.2697,
+    "homeWin": 0.4507,
+    "awayWin": 0.2796,
+    "zip00": 0.0107,
+    "nbPhi": 0,
+    "cap": 6,
+    "inflate10": 0.84,
+    "inflate21": 0.955,
+    "emp10": 0.0888,
+    "emp01": 0.0822,
+    "emp21": 0.0888,
+    "emp12": 0.0691,
+    "n": 304
+  },
+  "independence": {
+    "serial": 0.5459,
+    "serialGd": 0.0973,
+    "form": 0.45,
+    "n": 740,
+    "leaky": false,
+    "shuffle": 0.5125
+  },
+  "overdisp": {
+    "ratio": 0.906,
+    "n": 38,
+    "ggCard": 1.258
+  },
+  "markets": {
+    "un25": {
+      "n": 3,
+      "hits": 2,
+      "rate": 0.6666666666666666,
+      "kill": false
+    },
+    "ov15": {
+      "n": 105,
+      "hits": 78,
+      "rate": 0.7428571428571429,
+      "kill": false,
+      "ev": null,
+      "brier": null
+    },
+    "ng": {
+      "n": 2,
+      "hits": 0,
+      "rate": 0,
+      "kill": false
+    }
+  },
+  "sureExtra": {
+    "n": 33,
+    "hits": 28,
+    "rate": 0.8484848484848485,
+    "minP": 0.48,
+    "brier": 0.1741596638730212,
+    "logloss": 0.532052528600014
+  },
+  "oddsWeight": 0.76,
+  "modelWeight": 0.24,
+  "prefer": [
+    "ov15"
+  ],
+  "skip1x2": false,
+  "skipDraw": false,
+  "skipNg": false,
+  "skipOv25": false,
+  "holdout": {
+    "alwaysOv15": 0.6711,
+    "alwaysGg": 0.4342,
+    "modelExtra": 0.8485,
+    "random3": 0.5,
+    "n": 76,
+    "edge": true
+  },
+  "seasonId": "2026091502",
+  "updatedAt": "2026-09-14T23:56:52.776Z"
+}

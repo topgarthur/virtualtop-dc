@@ -4,6 +4,7 @@ const { applySettledMatch } = require('./bayesian');
 const { odibetGet, flattenResults } = require('./odibetClient');
 const { setStandings } = require('./standingsCache');
 const { pushLog } = require('./logger');
+const { rebuildFromHistory } = require('./rngIntel');
 
 async function seedHistory() {
   try {
@@ -20,6 +21,7 @@ async function seedHistory() {
       if (!pushActualized(row)) continue;
       applySettledMatch(row);
     }
+    rebuildFromHistory();
     pushLog({
       level: 'info',
       type: 'seed',

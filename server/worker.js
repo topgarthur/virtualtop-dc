@@ -6,6 +6,7 @@ const { applySettledMatch, snapshotRatings } = require('./bayesian');
 const { getStandings } = require('./standingsCache');
 const { pushLog } = require('./logger');
 const { gradeResults, lockCard, summary } = require('./roundTracker');
+const { rebuildFromHistory } = require('./rngIntel');
 
 const state = {
   running: false,
@@ -44,6 +45,7 @@ function ingestResults(results) {
     applySettledMatch(row);
     added += 1;
   }
+  if (added) rebuildFromHistory();
   return added;
 }
 
@@ -123,14 +125,14 @@ async function tick() {
       pushLog({
         level: 'success',
         type: 'tick',
-        message: `${sync.phase.toUpperCase()} ${sync.roundLabel || sync.matchdayTime} — ${analyzed.count} fixtures, HV=${analyzed.highValueCount}, results+${added}`,
+        message: `${sync.phase.toUpperCase()} ${sync.roundLabel || sync.matchdayTime} — ${analyzed.count} fixtures, results+${added}`,
       });
     } else if (graded.length) {
       for (const card of graded) {
         pushLog({
           level: 'success',
           type: 'round',
-          message: `${card.title}: ${card.correct} correct / ${card.wrong} wrong. Lesson stored for next weeks.`,
+          message: `${card.title}: 1X2 ${card.correct}/${card.wrong} · extra ${(card.easyCorrect || 0)}/${(card.easyWrong || 0)}. Lesson stored.`,
         });
       }
     } else if (added) {

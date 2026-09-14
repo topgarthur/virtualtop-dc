@@ -1,0 +1,33 @@
+{
+  "weights": {
+    "table": 0.2091721707314995,
+    "dc": 0.34124391591695014,
+    "elo": 0.21596281579900883,
+    "pi": 0.23362109755254157
+  },
+  "rho": 0.16892464674818566,
+  "temperature": 1.35,
+  "drawRate": 0.22231161687046413,
+  "homeAdv": 1.06,
+  "logloss": 1.0643467155354245,
+  "n": 920,
+  "brier": 0.6405920871559061,
+  "confusion": {
+    "HOME_WIN": {
+      "HOME_WIN": 287,
+      "DRAW": 152,
+      "AWAY_WIN": 120
+    },
+    "DRAW": {
+      "HOME_WIN": 2,
+      "DRAW": 0,
+      "AWAY_WIN": 1
+    },
+    "AWAY_WIN": {
+      "HOME_WIN": 120,
+      "DRAW": 93,
+      "AWAY_WIN": 145
+    }
+  },
+  "lastLesson": "Learner 02:48: 3/10 hit, logloss 1.064, T=1.35, ρ=0.169, w table 0.21 DC 0.34 (acc 30%)."
+}

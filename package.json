@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "description": "virtualTOP$DC — OdiLeague live-sync RNG analytics and simulation bot",
-  "proxy": "http://localhost:4000",
+  "homepage": ".",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",

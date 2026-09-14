@@ -1,13 +1,31 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { analyzeMatchday, controlBot, fetchLogs, fetchStatus, fetchSync } from './api';
+import { analyzeMatchday, controlBot, fetchStatus, fetchSync, overrideStake } from './api';
 
 const BotContext = createContext(null);
 
+function idsKey(fixtures) {
+  return (fixtures || []).map((row) => row.fixtureId).join('|');
+}
+
+function readStore(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStore(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
 export function BotProvider({ children }) {
-  const [riskProfile, setRiskProfile] = useState('balanced');
   const [status, setStatus] = useState({
     running: false,
-    circuitOpen: false,
     lastPredictions: [],
     phase: 'prematch',
     countdownLabel: '00:00',
@@ -16,53 +34,79 @@ export function BotProvider({ children }) {
   });
   const [sync, setSync] = useState(null);
   const [feed, setFeed] = useState([]);
-  const [logs, setLogs] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [selectedPeriod, setSelectedPeriod] = useState(null);
-  const analyzedKey = useRef(null);
+  const [stakeMode, setStakeModeState] = useState(() => readStore('vtop.stakeMode.v2', 'both'));
+  const [stakeUnit, setStakeUnitState] = useState(() => Number(readStore('vtop.unit', '50')) || 50);
+  const [feedFilter, setFeedFilterState] = useState(() => readStore('vtop.feedFilter', 'all'));
+  const selectedRef = useRef(null);
+  const genRef = useRef(0);
+  const cacheRef = useRef(new Map());
+  const liveCountRef = useRef({ seconds: 0, at: null });
+  const clickLock = useRef(false);
+
+  const setStakeMode = useCallback((value) => {
+    setStakeModeState(value);
+    writeStore('vtop.stakeMode.v2', value);
+  }, []);
+  const setStakeUnit = useCallback((value) => {
+    setStakeUnitState(Number(value));
+    writeStore('vtop.unit', String(value));
+  }, []);
+  const setFeedFilter = useCallback((value) => {
+    setFeedFilterState(value);
+    writeStore('vtop.feedFilter', value);
+  }, []);
 
   const applySync = useCallback((snapshot, rows) => {
-    setSync(snapshot);
+    const merged = {
+      ...snapshot,
+      countdownSeconds: liveCountRef.current.seconds || snapshot.countdownSeconds,
+      generatedAt: liveCountRef.current.at || snapshot.generatedAt,
+    };
+    setSync(merged);
     if (rows) setFeed(rows);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const loadCard = useCallback(async (period) => {
+    const mine = ++genRef.current;
+    const cached = period ? cacheRef.current.get(period) : null;
+    if (cached?.rows?.length) {
+      applySync(cached.snapshot, cached.rows);
+    }
     try {
-      const [nextStatus, snapshot] = await Promise.all([fetchStatus(), fetchSync(selectedPeriod)]);
-      setStatus(nextStatus);
+      const snapshot = await fetchSync(period, { lite: Boolean(period) });
+      if (mine !== genRef.current) return;
+      if (snapshot.countdownSeconds != null) {
+        liveCountRef.current = { seconds: snapshot.countdownSeconds, at: snapshot.generatedAt };
+      }
       setError(null);
 
-      const key = `${snapshot.phase}|${snapshot.matchdayTime}|${(snapshot.fixtures || [])
-        .map((row) => `${row.fixtureId}:${row.score}`)
-        .join('|')}`;
-
-      const expireSelection = () => {
-        const stillListed = (snapshot.periods || []).some((period) => period.startTime === selectedPeriod);
-        if (selectedPeriod && !stillListed) setSelectedPeriod(null);
-      };
-
-      if (nextStatus.lastPredictions?.length && nextStatus.matchdayTime === snapshot.matchdayTime) {
-        analyzedKey.current = key;
-        applySync({ ...snapshot, strategy: snapshot.strategy || nextStatus.strategy }, nextStatus.lastPredictions);
-        expireSelection();
+      const want = selectedRef.current;
+      if (want && snapshot.selectedPeriod && snapshot.selectedPeriod !== want) {
         return;
       }
 
-      if (!snapshot.fixtures?.length) {
-        analyzedKey.current = key;
-        applySync({ ...snapshot, strategy: snapshot.strategy || nextStatus.strategy }, []);
-        expireSelection();
+      const ids = idsKey(snapshot.fixtures);
+      const hit = cacheRef.current.get(snapshot.selectedPeriod);
+      if (hit && hit.ids === ids && hit.rows?.length) {
+        if (snapshot.phase === 'live') {
+          applySync({ ...snapshot, strategy: snapshot.strategy || hit.snapshot.strategy }, hit.rows);
+          return;
+        }
+        applySync({ ...snapshot, strategy: snapshot.strategy || hit.snapshot.strategy }, hit.rows);
         return;
       }
 
-      if (analyzedKey.current === key) {
-        applySync({ ...snapshot, strategy: snapshot.strategy || nextStatus.strategy });
-        expireSelection();
-        return;
-      }
+      const placeholders = (snapshot.fixtures || []).map((fixture) => {
+        const prev = hit?.rows?.find((row) => row.fixture.fixtureId === fixture.fixtureId);
+        return prev || { fixture, analysis: { prediction: null, vector: {}, aux: { vector: {} } } };
+      });
+      applySync(snapshot, placeholders);
 
-      setBusy(true);
+      if (!snapshot.fixtures?.length) return;
+
       const analyzed = await analyzeMatchday({
         matchdayTime: snapshot.matchdayTime,
         fixtures: snapshot.fixtures,
@@ -70,24 +114,78 @@ export function BotProvider({ children }) {
         week: snapshot.week,
         phase: snapshot.phase,
       });
-      analyzedKey.current = key;
+      if (mine !== genRef.current) return;
+      const rows = analyzed.rows || [];
+      cacheRef.current.set(snapshot.selectedPeriod, { snapshot, rows, ids });
       applySync(
         {
           ...snapshot,
           strategy: {
-            ...(snapshot.strategy || nextStatus.strategy || {}),
+            ...(snapshot.strategy || {}),
             current: analyzed.round || snapshot.strategy?.current,
           },
         },
-        analyzed.rows || []
+        rows
       );
-      expireSelection();
     } catch (err) {
-      setError(err.message);
+      if (mine !== genRef.current) return;
+      setError(
+        /fetch|Failed|ECONNREFUSED|API not found/i.test(err.message)
+          ? 'API offline — host needs the Node server (not a static Vercel site). Locally run npm run server.'
+          : err.message
+      );
     } finally {
-      setBusy(false);
+      if (mine === genRef.current) setBusy(false);
     }
-  }, [applySync, selectedPeriod]);
+  }, [applySync]);
+
+  const poll = useCallback(async () => {
+    if (clickLock.current) return;
+    try {
+      const nextStatus = await fetchStatus();
+      setStatus(nextStatus);
+      const period = selectedRef.current;
+      const snapshot = await fetchSync(period, { lite: true });
+      if (snapshot.countdownSeconds != null) {
+        liveCountRef.current = { seconds: snapshot.countdownSeconds, at: snapshot.generatedAt };
+      }
+      setSync((prev) => {
+        if (!prev) return snapshot;
+        return {
+          ...prev,
+          countdownSeconds: snapshot.countdownSeconds,
+          countdownLabel: snapshot.countdownLabel,
+          generatedAt: snapshot.generatedAt,
+          periods: snapshot.periods || prev.periods,
+          strategy: snapshot.strategy || prev.strategy,
+          standings: snapshot.standings?.length ? snapshot.standings : prev.standings,
+        };
+      });
+      const want = selectedRef.current;
+      if (want && snapshot.selectedPeriod !== want) return;
+      const ids = idsKey(snapshot.fixtures);
+      const key = snapshot.selectedPeriod;
+      const hit = cacheRef.current.get(key);
+      if (snapshot.phase === 'live' && key === (want || snapshot.livePeriodStart || key)) {
+        if (!hit || hit.ids !== ids) {
+          loadCard(period);
+        } else {
+          setFeed((prev) =>
+            prev.map((row) => {
+              const fresh = (snapshot.fixtures || []).find((item) => item.fixtureId === row.fixture.fixtureId);
+              return fresh ? { ...row, fixture: { ...row.fixture, ...fresh } } : row;
+            })
+          );
+        }
+        return;
+      }
+      if (!want && (!hit || hit.ids !== ids)) {
+        loadCard(null);
+      }
+    } catch {
+      // keep last good frame; loadCard shows hard errors
+    }
+  }, [loadCard]);
 
   const start = useCallback(async () => {
     try {
@@ -108,60 +206,96 @@ export function BotProvider({ children }) {
   }, []);
 
   const selectPeriod = useCallback((startTime) => {
+    if (selectedRef.current === startTime) return;
+    selectedRef.current = startTime;
     setSelectedPeriod(startTime);
-    analyzedKey.current = null;
-  }, []);
+    clickLock.current = true;
+    const hit = cacheRef.current.get(startTime);
+    if (hit?.rows?.length) applySync(hit.snapshot, hit.rows);
+    else setBusy(true);
+    loadCard(startTime).finally(() => {
+      clickLock.current = false;
+    });
+  }, [applySync, loadCard]);
 
-  useEffect(() => {
-    refresh();
-    fetchLogs()
-      .then((data) => setLogs(data.logs || []))
-      .catch(() => {});
-  }, [refresh]);
-
-  useEffect(() => {
-    const timer = setInterval(refresh, 2000);
-    return () => clearInterval(timer);
-  }, [refresh]);
-
-  useEffect(() => {
-    const source = new EventSource('/v1/bot/logs?stream=1');
-    source.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.hello && payload.recent) {
-          setLogs((prev) => (prev.length ? prev : payload.recent));
-          return;
-        }
-        setLogs((prev) => {
-          const next = [...prev, payload];
-          return next.length > 180 ? next.slice(next.length - 180) : next;
-        });
-      } catch {
-        // ignore malformed SSE frames
+  const overrideEasy = useCallback((fixtureId, easyPick) => {
+    setFeed((prev) => {
+      const next = prev.map((row) => {
+        if (String(row.fixture.fixtureId) !== String(fixtureId)) return row;
+        return { ...row, analysis: { ...row.analysis, easyPick: { ...easyPick, overridden: true } } };
+      });
+      const period = selectedRef.current || sync?.selectedPeriod;
+      if (period && cacheRef.current.has(period)) {
+        const hit = cacheRef.current.get(period);
+        cacheRef.current.set(period, { ...hit, rows: next });
       }
-    };
-    source.onerror = () => {};
-    return () => source.close();
-  }, []);
+      return next;
+    });
+    overrideStake({
+      seasonId: sync?.seasonId,
+      week: sync?.week,
+      matchdayTime: sync?.matchdayTime,
+      fixtureId,
+      easyPick,
+    }).catch(() => {});
+  }, [sync]);
+
+  useEffect(() => {
+    loadCard(null);
+  }, [loadCard]);
+
+  useEffect(() => {
+    const timer = setInterval(poll, 2500);
+    return () => clearInterval(timer);
+  }, [poll]);
+
+  const visibleFeed = useMemo(() => {
+    if (feedFilter === 'sure-extra') return feed.filter((row) => row.analysis?.easyAdvice === 'SURE_BET');
+    if (feedFilter === 'skip-extra') return feed.filter((row) => row.analysis?.easyAdvice === 'DONT_RISK');
+    return feed;
+  }, [feed, feedFilter]);
 
   const value = useMemo(
     () => ({
-      riskProfile,
-      setRiskProfile,
       status,
       sync,
       feed,
-      logs,
+      visibleFeed,
       busy,
       error,
       start,
       stop,
-      refresh,
+      refresh: () => loadCard(selectedRef.current),
       selectedPeriod,
       selectPeriod,
+      stakeMode,
+      setStakeMode,
+      stakeUnit,
+      setStakeUnit,
+      feedFilter,
+      setFeedFilter,
+      overrideEasy,
     }),
-    [riskProfile, status, sync, feed, logs, busy, error, start, stop, refresh, selectedPeriod, selectPeriod]
+    [
+      status,
+      sync,
+      feed,
+      visibleFeed,
+      busy,
+      error,
+      start,
+      stop,
+      selectedPeriod,
+      selectPeriod,
+      stakeMode,
+      setStakeMode,
+      stakeUnit,
+      setStakeUnit,
+      feedFilter,
+      setFeedFilter,
+      overrideEasy,
+      loadCard,
+    ]
   );
 
   return <BotContext.Provider value={value}>{children}</BotContext.Provider>;

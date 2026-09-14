@@ -8,7 +8,7 @@ const EV_VALUE_THRESHOLD = 0.03;
 const BUFFER_SIZE = 400;
 const CIRCUIT_THRESHOLD = 3;
 const BASE_MULTIPLIER_MS = 400;
-const WORKER_INTERVAL_MS = 1000;
+const WORKER_INTERVAL_MS = process.env.NODE_ENV === 'production' ? 2500 : 1000;
 const VALUE_CLAMP = [P_MIN, P_MAX];
 const ODIBET_VIRTUALS = 'https://odibets.com/pxy2/virtuals';
 

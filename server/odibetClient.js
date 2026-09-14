@@ -5,48 +5,53 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 async function odibetGet(params, timeoutMs = 8000) {
-  const url = new URL(ODIBET_VIRTUALS);
-  url.searchParams.set('competition_id', String(params.competition_id || COMPETITION_ID));
-  url.searchParams.set('resource', 'virtuals');
-  url.searchParams.set('platform', 'desktop');
-  for (const [key, value] of Object.entries(params)) {
-    if (value == null || value === '' || key === 'competition_id') continue;
-    url.searchParams.set(key, String(value));
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const url = new URL(ODIBET_VIRTUALS);
+    url.searchParams.set('competition_id', String(params.competition_id || COMPETITION_ID));
+    url.searchParams.set('resource', 'virtuals');
+    url.searchParams.set('platform', 'desktop');
+    for (const [key, value] of Object.entries(params)) {
+      if (value == null || value === '' || key === 'competition_id') continue;
+      url.searchParams.set(key, String(value));
+    }
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          'Accept-Language': 'en-KE,en;q=0.9',
+          Origin: 'https://odibets.com',
+          Referer: 'https://odibets.com/league',
+          'User-Agent': UA,
+        },
+      });
+      if (!res.ok) {
+        const err = new Error(`OdiLeague HTTP ${res.status}`);
+        err.code = 'ERR_ODILEAGUE_TIMEOUT';
+        throw err;
+      }
+      const json = await res.json();
+      if (!json || json.status_code !== 200) {
+        const err = new Error(json?.status_description || 'OdiLeague feed rejected the request');
+        err.code = 'ERR_ODILEAGUE_TIMEOUT';
+        throw err;
+      }
+      return json.data || {};
+    } catch (err) {
+      last = err;
+      if (err.name === 'AbortError') {
+        last = new Error('OdiLeague feed connection timed out');
+        last.code = 'ERR_ODILEAGUE_TIMEOUT';
+      }
+      await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)));
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: {
-        Accept: 'application/json',
-        Origin: 'https://odibets.com',
-        Referer: 'https://odibets.com/league',
-        'User-Agent': UA,
-      },
-    });
-    if (!res.ok) {
-      const err = new Error(`OdiLeague HTTP ${res.status}`);
-      err.code = 'ERR_ODILEAGUE_TIMEOUT';
-      throw err;
-    }
-    const json = await res.json();
-    if (!json || json.status_code !== 200) {
-      const err = new Error(json?.status_description || 'OdiLeague feed rejected the request');
-      err.code = 'ERR_ODILEAGUE_TIMEOUT';
-      throw err;
-    }
-    return json.data || {};
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      const timeout = new Error('OdiLeague feed connection timed out');
-      timeout.code = 'ERR_ODILEAGUE_TIMEOUT';
-      throw timeout;
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+  throw last || new Error('OdiLeague feed connection timed out');
 }
 
 function oddFromOutcomes(outcomes, keys) {
@@ -67,10 +72,33 @@ function extractOdds(match) {
   const ng = oddFromOutcomes(byId.GG, ['N', 'No', 'NG']);
   const ov25 = oddFromOutcomes(byId.TG25, ['O', 'Over', 'OV', '2']);
   const un25 = oddFromOutcomes(byId.TG25, ['U', 'Under', 'UN', '1']);
-  const odds = { home, draw, away, gg, ng, ov25, un25 };
+  const ov15 = oddFromOutcomes(byId.TG15, ['O', 'Over', 'OV']);
+  const un15 = oddFromOutcomes(byId.TG15, ['U', 'Under', 'UN']);
+  const dc1x = oddFromOutcomes(byId.DC, ['1X']);
+  const dcx2 = oddFromOutcomes(byId.DC, ['X2']);
+  const dc12 = oddFromOutcomes(byId.DC, ['12']);
+  const odds = { home, draw, away, gg, ng, ov25, un25, ov15, un15, dc1x, dcx2, dc12 };
   const complete = home && draw && away;
-  if (complete) oddsCache.set(String(match.parent_match_id), odds);
-  return complete ? odds : oddsCache.get(String(match.parent_match_id)) || odds;
+  if (complete) oddsCache.set(String(match.parent_match_id), { ...oddsCache.get(String(match.parent_match_id)), ...odds });
+  return { ...(oddsCache.get(String(match.parent_match_id)) || {}), ...odds };
+}
+
+async function attachExtraMarkets(periodStart, level, matches, timeoutMs) {
+  if (!periodStart || !matches?.length) return matches;
+  const packs = await Promise.all(
+    ['DC', 'TG15', 'TG25', 'GG'].map((sub_type_id) =>
+      odibetGet({ period: periodStart, level, sub_type_id }, timeoutMs).catch(() => ({ matches: [] }))
+    )
+  );
+  const byId = new Map(matches.map((row) => [String(row.parent_match_id), row]));
+  for (const pack of packs) {
+    for (const row of pack.matches || []) {
+      const target = byId.get(String(row.parent_match_id));
+      if (!target) continue;
+      target.markets = [...(target.markets || []), ...(row.markets || [])];
+    }
+  }
+  return matches;
 }
 
 function parseScore(result) {
@@ -112,8 +140,9 @@ function flattenResults(rounds) {
   return rows;
 }
 
-async function fetchSnapshot(selectedStart) {
-  const live = await odibetGet({ level: 1 });
+async function fetchSnapshot(selectedStart, options = {}) {
+  const lite = Boolean(options.lite);
+  const live = await odibetGet({ level: 1 }, lite ? 5000 : 8000);
   const periods = live.periods || [];
   const now = Date.now();
   const decorated = periods.map((period) => {
@@ -131,8 +160,11 @@ async function fetchSnapshot(selectedStart) {
 
   const livePeriod = decorated.find((p) => p.phase === 'live');
   const nextPeriod = decorated.filter((p) => p.phase === 'upcoming').sort((a, b) => a.start - b.start)[0];
+  const want = selectedStart ? decodeURIComponent(String(selectedStart)).trim() : '';
   const requested =
-    decorated.find((p) => p.start_time === selectedStart) ||
+    decorated.find((p) => p.start_time === want) ||
+    decorated.find((p) => String(p.start_time).replace(' ', 'T') === want.replace(' ', 'T')) ||
+    (!want ? livePeriod || nextPeriod || decorated[0] : null) ||
     livePeriod ||
     nextPeriod ||
     decorated[0];
@@ -144,14 +176,15 @@ async function fetchSnapshot(selectedStart) {
       const detailed = await odibetGet({
         period: activePeriod.start_time,
         level: activePeriod.phase === 'live' ? 5 : 3,
-      });
+      }, lite ? 5000 : 8000);
       if (detailed.matches?.length) matches = detailed.matches;
+      matches = await attachExtraMarkets(activePeriod.start_time, activePeriod.phase === 'live' ? 5 : 3, matches, lite ? 4500 : 8000);
     } catch {
       // keep the live payload if the period fetch fails
     }
   }
 
-  if (nextPeriod && livePeriod) {
+  if (!lite && nextPeriod && livePeriod) {
     try {
       const upcoming = await odibetGet({ period: nextPeriod.start_time, level: 3 });
       for (const match of upcoming.matches || []) extractOdds(match);
@@ -162,17 +195,19 @@ async function fetchSnapshot(selectedStart) {
 
   let results = [];
   let standings = [];
-  try {
-    const stats = await odibetGet({ tab: 'results' });
-    results = flattenResults(stats.results || []);
-  } catch {
-    results = [];
-  }
-  try {
-    const table = await odibetGet({ tab: 'standings' });
-    standings = table.standings || [];
-  } catch {
-    standings = [];
+  if (!lite) {
+    try {
+      const stats = await odibetGet({ tab: 'results' });
+      results = flattenResults(stats.results || []);
+    } catch {
+      results = [];
+    }
+    try {
+      const table = await odibetGet({ tab: 'standings' });
+      standings = table.standings || [];
+    } catch {
+      standings = [];
+    }
   }
 
   return {

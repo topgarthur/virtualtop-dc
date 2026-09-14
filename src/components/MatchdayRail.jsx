@@ -31,7 +31,7 @@ export default function MatchdayRail({ compact = false }) {
     tick();
     const id = setInterval(tick, 250);
     return () => clearInterval(id);
-  }, [baseSeconds, generatedAt, snapshot.selectedPeriod]);
+  }, [baseSeconds, generatedAt]);
 
   return (
     <div className={`odi-rail ${compact ? 'compact' : ''}`}>
@@ -46,7 +46,9 @@ export default function MatchdayRail({ compact = false }) {
               key={period.startTime}
               type="button"
               className={`rail-kick ${active ? 'active' : ''} ${period.phase === 'live' ? 'playing' : ''}`}
-              onClick={() => selectPeriod(period.startTime)}
+              onClick={() => {
+                if (!active) selectPeriod(period.startTime);
+              }}
             >
               {period.clock}
             </button>

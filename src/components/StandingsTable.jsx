@@ -1,18 +1,23 @@
 import { useBot } from '../BotContext';
 
+function formLetters(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item).toUpperCase().replace(/[^WDL]/g, '')).filter(Boolean);
+  }
+  return [...String(raw || '').toUpperCase()].filter((ch) => ch === 'W' || ch === 'D' || ch === 'L');
+}
+
 export default function StandingsTable() {
   const { sync, status } = useBot();
-  const pack = sync?.standings
+  const pack = Array.isArray(sync?.standings)
     ? { seasonId: sync.seasonId, rows: sync.standings }
-    : status.standings || { seasonId: '2026091202', rows: [] };
+    : status.standings || { seasonId: sync?.seasonId || '2026091502', rows: [] };
   const rows = pack.rows || [];
+  const season = pack.seasonId || sync?.seasonId || '2026091502';
 
   return (
-    <section className="panel standings">
-      <header className="panel-head">
-        <span className="kicker">English League</span>
-        <h2>Standings #{pack.seasonId || '2026091202'}</h2>
-      </header>
+    <div className="odi-table">
+      <h3 className="odi-table-title">English League Season #{season}</h3>
       <div className="stand-table">
         <div className="stand-row head">
           <span>P</span>
@@ -25,11 +30,18 @@ export default function StandingsTable() {
             <span>{row.pos}</span>
             <span>{row.team_name}</span>
             <span>{row.points}</span>
-            <span className="form">{row.team_form}</span>
+            <span className="form-pills">
+              {formLetters(row.team_form).map((ch, index) => (
+                <i key={`${ch}-${index}`} className={ch}>
+                  {ch}
+                </i>
+              ))}
+              {!formLetters(row.team_form).length && '—'}
+            </span>
           </div>
         ))}
         {!rows.length && <p className="hint">Waiting for Odibet table…</p>}
       </div>
-    </section>
+    </div>
   );
 }
