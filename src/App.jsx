@@ -25,6 +25,12 @@ function Home() {
   const { flash } = useDemo();
   const phase = sync?.phase || status.phase || 'prematch';
   const fixturesOn = (sync?.fixtures || feed).length > 0 || feed.length > 0;
+  const filterHit =
+    feedFilter === 'sure-extra'
+      ? feed.some((row) => row.analysis?.easyAdvice === 'SURE_BET')
+      : feedFilter === 'skip-extra'
+        ? feed.some((row) => row.analysis?.easyAdvice === 'DONT_RISK')
+        : true;
   const [focusMode, setFocusMode] = useState(() => {
     try {
       return localStorage.getItem('vtop.focusMode') === '1';
@@ -100,9 +106,9 @@ function Home() {
           {busy && !feed.length && <p className="hint">syncing Odibet…</p>}
           {fixturesOn ? (
             <div className="cards">
-              {visibleFeed.map((row) => (
-                <MatchFeedCard key={row.fixture.fixtureId} row={row} focusMode={focusMode} />
-              ))}
+          {visibleFeed.map((row) =>
+            row?.fixture ? <MatchFeedCard key={row.fixture.fixtureId} row={row} focusMode={focusMode} /> : null
+          )}
             </div>
           ) : (
             <div className="intermission">
@@ -110,7 +116,9 @@ function Home() {
               <p className="hint">Waiting for the next Odibet English League card.</p>
             </div>
           )}
-          {fixturesOn && !visibleFeed.length && <p className="hint">No cards in this filter.</p>}
+          {fixturesOn && !filterHit && feed.length > 0 && (
+            <p className="hint">No sure/skip tags on this card — showing all {feed.length} matches.</p>
+          )}
         </section>
         {!focusMode && <NextEventStage onFocusMode={() => toggleFocus(true)} />}
       </div>

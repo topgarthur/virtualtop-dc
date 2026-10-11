@@ -125,6 +125,7 @@ function recordCard({ seasonId, week, matchdayTime, phase, rows }) {
         elo: winnerOf(analysis.ratings?.model?.components?.elo),
         pi: winnerOf(analysis.ratings?.model?.components?.pi),
       },
+      mlFeatures: analysis.ratings?.model?.mlFeatures || null,
       actual: null,
       ok: null,
       easyOk: null,
@@ -405,6 +406,51 @@ function stance() {
   };
 }
 
+function slimPick(pick) {
+  return {
+    fixtureId: pick.fixtureId,
+    home: pick.home,
+    away: pick.away,
+    pick: pick.pick,
+    advice: pick.advice,
+    easyPick: pick.easyPick ? { key: pick.easyPick.key, label: pick.easyPick.label } : null,
+    easyAdvice: pick.easyAdvice,
+    ok: pick.ok,
+    easyOk: pick.easyOk,
+    score: pick.score,
+  };
+}
+
+function slimCard(card) {
+  if (!card) return null;
+  return {
+    key: card.key,
+    seasonId: card.seasonId,
+    week: card.week,
+    clock: card.clock,
+    matchdayTime: card.matchdayTime,
+    status: card.status,
+    correct: card.correct,
+    wrong: card.wrong,
+    easyCorrect: card.easyCorrect,
+    easyWrong: card.easyWrong,
+    pending: card.pending,
+    picks: (card.picks || []).map(slimPick),
+  };
+}
+
+function publicSummary() {
+  const pack = summary();
+  return {
+    schema: pack.schema,
+    current: slimCard(pack.current),
+    segments: (pack.segments || []).slice(0, 16).map(slimCard),
+    totals: pack.totals,
+    marketStats: pack.marketStats,
+    corrections: pack.corrections,
+  };
+}
+
 function summary() {
   const rounds = getRounds();
   const graded = rounds.filter((r) => r.status === 'graded');
@@ -450,6 +496,7 @@ module.exports = {
   getRounds,
   getRound,
   summary,
+  publicSummary,
   stance,
   roundTitle,
 };

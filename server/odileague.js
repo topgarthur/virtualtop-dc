@@ -1,7 +1,7 @@
 const { PRODUCT, LEAGUE, findTeam, formatClock, formatCountdown, virtualRemaining } = require('./catalog');
-const { fetchSnapshot, extractOdds, parseScore, flattenResults, odibetGet } = require('./odibetClient');
+const { fetchSnapshot, extractOdds, parseMatchScore, flattenResults, odibetGet } = require('./odibetClient');
 const { setStandings, getStandings, applyFormFromResults } = require('./standingsCache');
-const { gradeResults, summary } = require('./roundTracker');
+const { gradeResults, publicSummary } = require('./roundTracker');
 
 function resolveTeam(id, name) {
   return findTeam(id) || findTeam(name) || { id: String(id || name), name: String(name || id), rating: 50 };
@@ -11,8 +11,8 @@ function mapFixture(match, phase) {
   const home = resolveTeam(match.home_id || match.homeId, match.home_team || match.homeTeam);
   const away = resolveTeam(match.away_id || match.awayId, match.away_team || match.awayTeam);
   const odds = extractOdds(match);
-  const score = parseScore(match.result);
-  const live = Number(match.status) === 1 || phase === 'live';
+  const score = parseMatchScore(match);
+  const live = Number(match.status) === 1 || Number(match.status) === 2 || phase === 'live';
   return {
     fixtureId: String(match.parent_match_id || match.fixtureId),
     homeId: home.id,
@@ -101,8 +101,8 @@ async function syncEnglish(selectedStart, options = {}) {
     source: 'odibets.com/pxy2/virtuals',
     fixtures,
     standings: standings.rows,
-    results: snap.results || [],
-    strategy: lite ? summary() : (gradeResults(snap.results), summary()),
+    results: lite ? [] : snap.results || [],
+    strategy: lite ? publicSummary() : (gradeResults(snap.results), publicSummary()),
     livePeriodStart: snap.livePeriod?.start_time || null,
   };
 }

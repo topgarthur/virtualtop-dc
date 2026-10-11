@@ -101,18 +101,85 @@ async function attachExtraMarkets(periodStart, level, matches, timeoutMs) {
   return matches;
 }
 
-function parseScore(result) {
-  const text = String(result || '').replace(/[-–]/g, ':');
-  const parts = text.split(':').map((n) => Number.parseInt(n, 10));
-  if (parts.length < 2 || Number.isNaN(parts[0]) || Number.isNaN(parts[1])) return { home: null, away: null, text: result || '0:0' };
+function parseScoreText(result) {
+  const text = String(result ?? '')
+    .trim()
+    .replace(/[–—−]/g, '-')
+    .replace(/[-/]/g, ':');
+  const parts = text.split(':').map((n) => Number.parseInt(String(n).trim(), 10));
+  if (parts.length < 2 || Number.isNaN(parts[0]) || Number.isNaN(parts[1])) {
+    return { home: null, away: null, text: result || '0:0' };
+  }
   return { home: parts[0], away: parts[1], text: `${parts[0]}:${parts[1]}` };
+}
+
+function parseScore(result) {
+  return parseScoreText(result);
+}
+
+function parseMatchScore(match) {
+  if (match == null) return parseScoreText('');
+  if (typeof match !== 'object') return parseScoreText(match);
+  const numeric = [
+    [match.home_score, match.away_score],
+    [match.homeScore, match.awayScore],
+    [match.home_goals, match.away_goals],
+    [match.homeGoals, match.awayGoals],
+    [match.hg, match.ag],
+    [match.h_score, match.a_score],
+  ];
+  for (const [hRaw, aRaw] of numeric) {
+    if (hRaw == null || aRaw == null || hRaw === '') continue;
+    const home = Number(hRaw);
+    const away = Number(aRaw);
+    if (Number.isNaN(home) || Number.isNaN(away)) continue;
+    return { home, away, text: `${home}:${away}` };
+  }
+  const texts = [
+    match.result,
+    match.score,
+    match.ft_score,
+    match.ft_result,
+    match.current_score,
+    match.live_score,
+    match.game_score,
+    match.match_result,
+  ];
+  for (const value of texts) {
+    const parsed = parseScoreText(value);
+    if (parsed.home != null) return parsed;
+  }
+  return { home: null, away: null, text: '0:0' };
+}
+
+function mergeMatchRows(base, extra) {
+  const map = new Map();
+  for (const row of base || []) map.set(String(row.parent_match_id || row.fixtureId), { ...row });
+  for (const row of extra || []) {
+    const id = String(row.parent_match_id || row.fixtureId);
+    const prev = map.get(id) || {};
+    const prevScore = parseMatchScore(prev);
+    const nextScore = parseMatchScore(row);
+    const keepPrev =
+      nextScore.home == null ||
+      (nextScore.home + nextScore.away === 0 && prevScore.home != null && prevScore.home + prevScore.away > 0);
+    map.set(id, {
+      ...prev,
+      ...row,
+      result: keepPrev ? prev.result || prev.score || row.result : row.result || row.score || prev.result,
+      home_score: keepPrev ? prev.home_score ?? prev.home_goals ?? row.home_score : row.home_score ?? prev.home_score,
+      away_score: keepPrev ? prev.away_score ?? prev.away_goals ?? row.away_score : row.away_score ?? prev.away_score,
+      markets: [...(prev.markets || []), ...(row.markets || [])],
+    });
+  }
+  return [...map.values()];
 }
 
 function flattenResults(rounds) {
   const rows = [];
   for (const round of rounds || []) {
     for (const match of round.matches || []) {
-      const score = parseScore(match.result);
+      const score = parseMatchScore(match);
       if (score.home == null) continue;
       let result = 'DRAW';
       if (score.home > score.away) result = 'HOME_WIN';
@@ -177,7 +244,7 @@ async function fetchSnapshot(selectedStart, options = {}) {
         period: activePeriod.start_time,
         level: activePeriod.phase === 'live' ? 5 : 3,
       }, lite ? 5000 : 8000);
-      if (detailed.matches?.length) matches = detailed.matches;
+      if (detailed.matches?.length) matches = mergeMatchRows(matches, detailed.matches);
       matches = await attachExtraMarkets(activePeriod.start_time, activePeriod.phase === 'live' ? 5 : 3, matches, lite ? 4500 : 8000);
     } catch {
       // keep the live payload if the period fetch fails
@@ -223,4 +290,4 @@ async function fetchSnapshot(selectedStart, options = {}) {
   };
 }
 
-module.exports = { fetchSnapshot, extractOdds, parseScore, flattenResults, odibetGet };
+module.exports = { fetchSnapshot, extractOdds, parseScore, parseMatchScore, flattenResults, odibetGet };

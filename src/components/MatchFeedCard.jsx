@@ -34,9 +34,10 @@ const GROUPS = [
 ];
 
 export default function MatchFeedCard({ row, focusMode = false }) {
-  const { fixture, analysis } = row;
+  const { fixture, analysis } = row || {};
   const { stakeMode, overrideEasy } = useBot();
   const { addPending, liveLocked } = useDemo();
+  if (!fixture) return null;
   const vector = analysis?.vector || analysis?.oneXTwo?.vector || {};
   const tag = analysis?.prediction;
   const aux = analysis?.aux?.vector || {};
@@ -47,6 +48,10 @@ export default function MatchFeedCard({ row, focusMode = false }) {
   const locked = Boolean(analysis?.locked);
   const show1x2 = stakeMode !== 'extra';
   const showExtra = stakeMode !== '1x2';
+  const liveScore =
+    fixture.homeGoals != null && fixture.awayGoals != null
+      ? `${fixture.homeGoals}:${fixture.awayGoals}`
+      : fixture.score || '0:0';
   const picks = [
     { key: 'HOME_WIN', label: 'HOME', market: 'home' },
     { key: 'DRAW', label: 'DRAW', market: 'draw' },
@@ -63,7 +68,7 @@ export default function MatchFeedCard({ row, focusMode = false }) {
     >
       <div className="match-meta">
         <span className="mono">
-          {fixture.live ? `LIVE ${fixture.score || '0:0'}` : fixture.startTime?.slice(11, 16) || ''}
+          {fixture.live ? `LIVE ${liveScore}` : fixture.startTime?.slice(11, 16) || ''}
           {locked ? ' · LOCK' : ''}
         </span>
         <span className="meta-tags">
@@ -79,7 +84,7 @@ export default function MatchFeedCard({ row, focusMode = false }) {
       <h3>
         {fixture.homeName || fixture.homeTeam} <em>vs</em> {fixture.awayName || fixture.awayTeam}
       </h3>
-      {fixture.live && <p className={`scoreline ${focusMode ? 'quiet' : ''}`}>{fixture.score || '0:0'}</p>}
+      {fixture.live && <p className={`scoreline ${focusMode ? 'quiet' : ''}`}>{liveScore}</p>}
       {show1x2 && (
         <div className="pick-row">
           {picks.map((item) => {

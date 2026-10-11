@@ -7,6 +7,37 @@ function idsKey(fixtures) {
   return (fixtures || []).map((row) => row.fixtureId).join('|');
 }
 
+function goalsOf(fx) {
+  const h = fx?.homeGoals;
+  const a = fx?.awayGoals;
+  if (h == null || a == null || Number.isNaN(Number(h)) || Number.isNaN(Number(a))) return null;
+  return Number(h) + Number(a);
+}
+
+function mergeLiveFixture(prev, fresh) {
+  if (!fresh) return prev;
+  const next = { ...prev, ...fresh };
+  const prevG = goalsOf(prev);
+  const freshG = goalsOf(fresh);
+  if (freshG == null && prevG != null) {
+    next.score = prev.score;
+    next.homeGoals = prev.homeGoals;
+    next.awayGoals = prev.awayGoals;
+  } else if (freshG === 0 && prevG > 0) {
+    next.score = prev.score;
+    next.homeGoals = prev.homeGoals;
+    next.awayGoals = prev.awayGoals;
+  }
+  return next;
+}
+
+function mergeLiveRows(rows, fixtures) {
+  return (rows || []).map((row) => {
+    const fresh = (fixtures || []).find((item) => String(item.fixtureId) === String(row.fixture?.fixtureId));
+    return fresh ? { ...row, fixture: mergeLiveFixture(row.fixture, fresh) } : row;
+  });
+}
+
 function readStore(key, fallback) {
   try {
     return localStorage.getItem(key) || fallback;
@@ -39,7 +70,10 @@ export function BotProvider({ children }) {
   const [selectedPeriod, setSelectedPeriod] = useState(null);
   const [stakeMode, setStakeModeState] = useState(() => readStore('vtop.stakeMode.v2', 'both'));
   const [stakeUnit, setStakeUnitState] = useState(() => Number(readStore('vtop.unit', '50')) || 50);
-  const [feedFilter, setFeedFilterState] = useState(() => readStore('vtop.feedFilter', 'all'));
+  const [feedFilter, setFeedFilterState] = useState(() => {
+    const stored = readStore('vtop.feedFilter', 'all');
+    return stored === 'sure-extra' || stored === 'skip-extra' ? 'all' : stored || 'all';
+  });
   const selectedRef = useRef(null);
   const genRef = useRef(0);
   const cacheRef = useRef(new Map());
@@ -91,11 +125,9 @@ export function BotProvider({ children }) {
       const ids = idsKey(snapshot.fixtures);
       const hit = cacheRef.current.get(snapshot.selectedPeriod);
       if (hit && hit.ids === ids && hit.rows?.length) {
-        if (snapshot.phase === 'live') {
-          applySync({ ...snapshot, strategy: snapshot.strategy || hit.snapshot.strategy }, hit.rows);
-          return;
-        }
-        applySync({ ...snapshot, strategy: snapshot.strategy || hit.snapshot.strategy }, hit.rows);
+        const rows = mergeLiveRows(hit.rows, snapshot.fixtures);
+        cacheRef.current.set(snapshot.selectedPeriod, { snapshot, rows, ids });
+        applySync({ ...snapshot, strategy: snapshot.strategy || hit.snapshot.strategy }, rows);
         return;
       }
 
@@ -157,9 +189,18 @@ export function BotProvider({ children }) {
           countdownLabel: snapshot.countdownLabel,
           generatedAt: snapshot.generatedAt,
           periods: snapshot.periods || prev.periods,
-          strategy: snapshot.strategy || prev.strategy,
+          strategy: snapshot.strategy || nextStatus.strategy || prev.strategy,
           standings: snapshot.standings?.length ? snapshot.standings : prev.standings,
+          fixtures: snapshot.fixtures?.length ? snapshot.fixtures : prev.fixtures,
+          phase: snapshot.phase || prev.phase,
         };
+      });
+      setFeed((prev) => {
+        if (prev.length) return prev;
+        return (snapshot.fixtures || []).map((fixture) => ({
+          fixture,
+          analysis: { prediction: null, vector: {}, aux: { vector: {} } },
+        }));
       });
       const want = selectedRef.current;
       if (want && snapshot.selectedPeriod !== want) return;
@@ -170,12 +211,12 @@ export function BotProvider({ children }) {
         if (!hit || hit.ids !== ids) {
           loadCard(period);
         } else {
-          setFeed((prev) =>
-            prev.map((row) => {
-              const fresh = (snapshot.fixtures || []).find((item) => item.fixtureId === row.fixture.fixtureId);
-              return fresh ? { ...row, fixture: { ...row.fixture, ...fresh } } : row;
-            })
-          );
+          setFeed((prev) => {
+            const rows = mergeLiveRows(prev, snapshot.fixtures);
+            const cached = cacheRef.current.get(key);
+            if (cached) cacheRef.current.set(key, { ...cached, rows });
+            return rows;
+          });
         }
         return;
       }
@@ -245,14 +286,16 @@ export function BotProvider({ children }) {
   }, [loadCard]);
 
   useEffect(() => {
-    const timer = setInterval(poll, 2500);
+    const timer = setInterval(poll, sync?.phase === 'live' || status.phase === 'live' ? 1200 : 2500);
     return () => clearInterval(timer);
-  }, [poll]);
+  }, [poll, sync?.phase, status.phase]);
 
   const visibleFeed = useMemo(() => {
-    if (feedFilter === 'sure-extra') return feed.filter((row) => row.analysis?.easyAdvice === 'SURE_BET');
-    if (feedFilter === 'skip-extra') return feed.filter((row) => row.analysis?.easyAdvice === 'DONT_RISK');
-    return feed;
+    let rows = feed;
+    if (feedFilter === 'sure-extra') rows = feed.filter((row) => row.analysis?.easyAdvice === 'SURE_BET');
+    else if (feedFilter === 'skip-extra') rows = feed.filter((row) => row.analysis?.easyAdvice === 'DONT_RISK');
+    if (!rows.length && feed.length) return feed;
+    return rows;
   }, [feed, feedFilter]);
 
   const value = useMemo(

@@ -9,7 +9,7 @@ const { startWorker, stopWorker, getStatus } = require('./worker');
 const { seedHistory } = require('./seed');
 const { getStandings } = require('./standingsCache');
 const { predictMatchday } = require('./strategyEngine');
-const { summary, getRound, setEasyOverride } = require('./roundTracker');
+const { publicSummary, getRound, setEasyOverride } = require('./roundTracker');
 const { getParams } = require('./learner');
 const { dataDir } = require('./dataDir');
 const { requireAdmin } = require('./adminGate');
@@ -64,7 +64,7 @@ app.get('/v1/strategy', (_req, res) => {
       rounds: 'GET /v1/strategy/rounds',
       round: 'GET /v1/strategy/rounds/:seasonId/:week',
     },
-    ...summary(),
+    ...publicSummary(),
   });
 });
 
@@ -81,7 +81,7 @@ app.get('/v1/strategy/learner', (_req, res) => {
 });
 
 app.get('/v1/strategy/rounds', (_req, res) => {
-  res.json(summary());
+  res.json(publicSummary());
 });
 
 app.get('/v1/strategy/rounds/:seasonId/:week', (req, res) => {

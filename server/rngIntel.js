@@ -342,7 +342,7 @@ function ingestGradedCard(card) {
       noteMarket(
         pick.easyPick.key,
         pick.easyOk,
-        pick.easyAdvice === 'SURE_BET',
+        pick.easyAdvice === 'SURE_BET' && Number(pick.easyPick.pModel || 0) >= 0.58,
         pick.easyPick.pModel,
         pick.easyPick.odds
       );

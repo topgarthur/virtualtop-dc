@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const STAT_FILES = ['strategy-state.json', 'learner-state.json', 'rng-intel.json'];
+
 function dataDir() {
   const env = process.env.DATA_DIR;
   const dir = env ? path.resolve(env) : path.join(__dirname, 'data');
@@ -19,6 +21,16 @@ function dataFile(name) {
     }
   }
   return dest;
+}
+
+if (process.env.RESET_STATS === '1') {
+  for (const name of STAT_FILES) {
+    try {
+      fs.unlinkSync(path.join(dataDir(), name));
+    } catch {
+      // already empty
+    }
+  }
 }
 
 module.exports = { dataDir, dataFile };

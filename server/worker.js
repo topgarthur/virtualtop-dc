@@ -5,7 +5,7 @@ const { pushActualized, snapshotSizes } = require('./buffers');
 const { applySettledMatch, snapshotRatings } = require('./bayesian');
 const { getStandings } = require('./standingsCache');
 const { pushLog } = require('./logger');
-const { gradeResults, lockCard, summary } = require('./roundTracker');
+const { gradeResults, lockCard, publicSummary } = require('./roundTracker');
 const { rebuildFromHistory } = require('./rngIntel');
 
 const state = {
@@ -171,7 +171,25 @@ function stopWorker() {
   return getStatus();
 }
 
+function slimSync(sync) {
+  if (!sync) return null;
+  return {
+    phase: sync.phase,
+    matchdayTime: sync.matchdayTime,
+    countdownSeconds: sync.countdownSeconds,
+    countdownLabel: sync.countdownLabel,
+    generatedAt: sync.generatedAt,
+    selectedPeriod: sync.selectedPeriod,
+    livePeriodStart: sync.livePeriodStart,
+    periods: sync.periods,
+    seasonId: sync.seasonId,
+    week: sync.week,
+    roundLabel: sync.roundLabel,
+  };
+}
+
 function getStatus() {
+  const sync = state.lastSync;
   return {
     running: state.running,
     product: 'OdiLeague',
@@ -183,12 +201,12 @@ function getStatus() {
     circuitOpen: state.circuitOpen,
     consecutiveFailures: state.consecutiveFailures,
     lastTick: state.lastTick,
-    lastPredictions: state.lastPredictions,
-    lastSync: state.lastSync,
+    lastPredictions: [],
+    lastSync: slimSync(sync),
     bufferSizes: snapshotSizes(),
     ratings: snapshotRatings(),
     standings: getStandings(),
-    strategy: summary(),
+    strategy: publicSummary(),
   };
 }
 

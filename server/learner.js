@@ -20,6 +20,11 @@ const DEFAULTS = {
     AWAY_WIN: { HOME_WIN: 0, DRAW: 0, AWAY_WIN: 0 },
   },
   lastLesson: 'Online learner waiting for graded cards.',
+  logit: {
+    home: [0.05, 0.55, 0.7, 0.35, 0.25, 0.18],
+    draw: [0.12, -0.15, -0.08, 0.02, -0.05, -0.04],
+    away: [0.02, -0.4, -0.55, -0.35, -0.22, -0.16],
+  },
 };
 
 let state = load();
@@ -36,6 +41,7 @@ function load() {
       ...parsed,
       weights: { ...DEFAULTS.weights, ...(parsed.weights || {}) },
       confusion: parsed.confusion || empty().confusion,
+      logit: parsed.logit || empty().logit,
     };
   } catch {
     return empty();
@@ -113,6 +119,7 @@ function learnCard(card) {
         w[name] *= vote === actual ? lrUp : lrDown;
       }
     }
+    if (pick.mlFeatures) updateLogit(pick.mlFeatures, actual);
     const top = Math.max(probs.home || 0, probs.draw || 0, probs.away || 0);
     if (!freeze) {
       if (!pick.ok && top > 0.48) state.temperature = clamp(state.temperature * 1.006, 0.9, 1.35);
@@ -157,6 +164,45 @@ function getParams() {
   };
 }
 
+function softmax3(home, draw, away) {
+  const m = Math.max(home, draw, away);
+  const eh = Math.exp(home - m);
+  const ed = Math.exp(draw - m);
+  const ea = Math.exp(away - m);
+  const z = eh + ed + ea || 1;
+  return { home: eh / z, draw: ed / z, away: ea / z };
+}
+
+function dot(w, x) {
+  let s = 0;
+  for (let i = 0; i < x.length; i += 1) s += (w[i] || 0) * (x[i] || 0);
+  return s;
+}
+
+function applyLogit(x) {
+  const w = state.logit || empty().logit;
+  return softmax3(dot(w.home, x), dot(w.draw, x), dot(w.away, x));
+}
+
+function updateLogit(x, actual) {
+  if (!Array.isArray(x) || x.length < 4 || !actual) return;
+  if (!state.logit) state.logit = empty().logit;
+  const p = applyLogit(x);
+  const y = {
+    home: actual === 'HOME_WIN' ? 1 : 0,
+    draw: actual === 'DRAW' ? 1 : 0,
+    away: actual === 'AWAY_WIN' ? 1 : 0,
+  };
+  const lr = state.n < 40 ? 0.012 : 0.035;
+  for (const key of ['home', 'draw', 'away']) {
+    const err = y[key] - p[key];
+    for (let i = 0; i < x.length; i += 1) {
+      state.logit[key][i] = (state.logit[key][i] || 0) + lr * err * x[i];
+      state.logit[key][i] = clamp(state.logit[key][i], -2.5, 2.5);
+    }
+  }
+}
+
 function applyTemperature(probs, temperature) {
   const t = Math.max(0.7, Number(temperature) || 1);
   const keys = ['home', 'draw', 'away'];
@@ -174,5 +220,6 @@ module.exports = {
   learnCard,
   getParams,
   applyTemperature,
+  applyLogit,
   winnerFromProbs,
 };

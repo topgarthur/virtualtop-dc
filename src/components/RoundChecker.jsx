@@ -71,7 +71,7 @@ export default function RoundChecker() {
       {segments.length ? (
         <div className="round-segments">
           {segments.map((card) => (
-            <article key={card.key} className={`round-seg ${card.status || ''}`}>
+            <article key={card.key || `${card.seasonId}-${card.week}-${card.clock}`} className={`round-seg ${card.status || ''}`}>
               <header>
                 <strong>{card.clock || card.matchdayTime || '--:--'}</strong>
                 <span>

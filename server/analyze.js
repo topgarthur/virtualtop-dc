@@ -255,8 +255,8 @@ function stampAdvice(rows) {
     return { index, surety, conf, gap, eligible };
   });
   scored.sort((a, b) => b.surety - a.surety);
-  const pool = scored.filter((row) => row.eligible);
-  const sureCount = Math.min(tilt.oneXSure, pool.length);
+  const pool = scored.filter((row) => row.eligible && row.conf >= 0.46 && row.gap >= 0.06);
+  const sureCount = Math.min(2, pool.length);
   const sure = new Set(pool.slice(0, sureCount).map((row) => row.index));
   const riskCount = Math.min(3, Math.max(0, rows.length - sure.size));
   const risk = new Set(scored.slice(scored.length - riskCount).filter((row) => !sure.has(row.index)).map((row) => row.index));
@@ -278,8 +278,6 @@ function stampAdvice(rows) {
 
 function stampEasyAdvice(rows) {
   if (!rows.length) return rows;
-  const tilt = stance();
-  const minP = Math.max(Number(getIntel().sureExtra?.minP || 0.52), tilt.minP);
   const scored = rows.map((row, index) => ({
     index,
     surety: Number(row.analysis?.easyPick?.surety || 0),
@@ -287,13 +285,9 @@ function stampEasyAdvice(rows) {
     key: row.analysis?.easyPick?.key || '',
   }));
   scored.sort((a, b) => b.surety - a.surety);
-  const eligible = scored.filter((row) => {
-    if (row.p < minP) return false;
-    if (tilt.preferCover && !(row.key.startsWith('dc') || row.key === 'ov15' || row.key === 'gg')) return false;
-    return true;
-  });
-  const sureCount = Math.min(tilt.extraSure, eligible.length);
-  const sure = new Set(eligible.slice(0, sureCount).map((row) => row.index));
+  const cover = (key) => key.startsWith('dc') || key === 'ov15';
+  const pool = scored.filter((row) => row.key && row.p >= (cover(row.key) ? 0.58 : 0.62));
+  const sure = new Set(pool.slice(0, Math.min(2, pool.length)).map((row) => row.index));
   const riskCount = Math.min(3, Math.max(0, rows.length - sure.size));
   const risk = new Set(scored.slice(scored.length - riskCount).filter((row) => !sure.has(row.index)).map((row) => row.index));
   return rows.map((row, index) => {
